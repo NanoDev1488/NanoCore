@@ -55,8 +55,9 @@ public class ServerManager {
     }
 
     private Optional<Path> findJar(Path dir) {
-        try (Stream<Path> s = Files.list(dir)) { return s.filter(p -> p.toString().endsWith(".jar")).findFirst(); }
-        catch (IOException e) { return Optional.empty(); }
+        try (Stream<Path> s = Files.list(dir)) {
+            return s.filter(p -> p.toString().endsWith(".jar")).findFirst();
+        } catch (IOException e) { return Optional.empty(); }
     }
 
     private List<Path> listSorted(Path dir) {
@@ -67,20 +68,33 @@ public class ServerManager {
     public void downloadAll() {
         System.out.println("\n[download] Downloading all server jars...");
         try { FillApiClient.downloadVelocity(baseDir.resolve("proxy")); }
-        catch (Exception e) { System.out.println("Velocity: " + e.getMessage()); }
+        catch (Exception e) { System.out.println("❌ Velocity: " + e.getMessage()); }
         try { FillApiClient.downloadBungeeCord(baseDir.resolve("servers/bungee-legacy")); }
-        catch (Exception e) { System.out.println("BungeeCord: " + e.getMessage()); }
+        catch (Exception e) { System.out.println("❌ BungeeCord: " + e.getMessage()); }
         for (String ver : PAPER_VERSIONS) {
             try { FillApiClient.downloadPaper(ver, baseDir.resolve("servers/paper-" + ver)); }
-            catch (Exception e) { System.out.println("Paper " + ver + ": " + e.getMessage()); }
+            catch (Exception e) { System.out.println("❌ Paper " + ver + ": " + e.getMessage()); }
         }
         System.out.println("\n[download] Done. Re-discovering servers...");
         discover();
     }
 
-    public void start(String id)   { withInstance(id, inst -> { try { inst.start(javaExec); } catch (IOException e) { System.out.println("Start error: " + e.getMessage()); } }); }
+    public void start(String id) {
+        withInstance(id, inst -> {
+            try { inst.start(javaExec); }
+            catch (IOException e) { System.out.println("❌ Start error: " + e.getMessage()); }
+        });
+    }
+
     public void stop(String id)    { withInstance(id, inst -> inst.stop(30)); }
-    public void restart(String id) { withInstance(id, inst -> { try { inst.restart(javaExec); } catch (IOException e) { System.out.println("Restart error: " + e.getMessage()); } }); }
+
+    public void restart(String id) {
+        withInstance(id, inst -> {
+            try { inst.restart(javaExec); }
+            catch (IOException e) { System.out.println("❌ Restart error: " + e.getMessage()); }
+        });
+    }
+
     public void startAll() { instances.keySet().forEach(this::start); }
     public void stopAll()  { new ArrayList<>(instances.keySet()).forEach(this::stop); }
 
@@ -98,13 +112,22 @@ public class ServerManager {
 
     public void printStatus() {
         System.out.println("\n=== NanoCore Server Status ===");
-        if (instances.isEmpty()) System.out.println("No servers. Run: java -jar NanoCore.jar download");
-        else instances.values().forEach(i -> System.out.println(i.statusLine()));
+        if (instances.isEmpty())
+            System.out.println("  No servers. Run: java -jar NanoCore.jar download");
+        else
+            instances.values().forEach(i -> System.out.println(i.statusLine()));
         System.out.println("==============================");
     }
 
     public void printPorts() { ports.printAll(); }
-    public Set<String> ids() { return Collections.unmodifiableSet(instances.keySet()); }
+
+    // ------------------------------------------------------------------
+    // Accessors
+    // ------------------------------------------------------------------
+    public Set<String>  ids()        { return Collections.unmodifiableSet(instances.keySet()); }
+    public boolean      isEmpty()    { return instances.isEmpty(); }
+    public boolean      has(String id) { return instances.containsKey(id); }
+    public Path         getBaseDir() { return baseDir; }
 
     public void registerShutdownHook() {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -116,7 +139,8 @@ public class ServerManager {
     private void withInstance(String id, Consumer<ServerInstance> action) {
         if ("all".equalsIgnoreCase(id)) { instances.values().forEach(action); return; }
         ServerInstance inst = instances.get(id);
-        if (inst == null) System.out.println("Server '" + id + "' not found. Available: " + instances.keySet());
+        if (inst == null)
+            System.out.println("Server '" + id + "' not found. Available: " + instances.keySet());
         else action.accept(inst);
     }
 }
