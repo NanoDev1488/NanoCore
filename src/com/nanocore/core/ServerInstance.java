@@ -8,48 +8,53 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ServerInstance {
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final int TAIL_BUFFER = 200;
 
-    private final ServerConfig config;
-    private final Path logFile;
-    private Process process;
-    private Thread logThread;
-    private final List<String> tailBuffer = new ArrayList<>(TAIL_BUFFER);
+    private final ServerConfig    config;
+    private final Path            logFile;
+    private Process               process;
+    private Thread                logThread;
+    private long                  startTime  = -1;
+    private final AtomicBoolean   wasStarted = new AtomicBoolean(false);
+    private final List<String>    tailBuffer = new ArrayList<>(TAIL_BUFFER);
 
     public ServerInstance(ServerConfig config) {
-        this.config = config;
+        this.config  = config;
         this.logFile = config.workdir.resolve("nanocore.log");
     }
 
     public ServerConfig getConfig() { return config; }
 
-    public synchronized void start(String javaExecutable) throws IOException {
+    public synchronized void start(String javaExec) throws IOException {
         if (isRunning()) { System.out.println("[" + config.id + "] Already running PID " + process.pid()); return; }
         if (config.type == ServerType.PAPER) config.ensurePaperEnv();
 
         List<String> cmd = new ArrayList<>();
-        cmd.add(javaExecutable);
+        cmd.add(javaExec);
         cmd.addAll(config.buildJvmArgs());
         System.out.println("[" + config.id + "] Starting: " + String.join(" ", cmd));
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(config.workdir.toFile());
         pb.redirectErrorStream(true);
-        process = pb.start();
+        process   = pb.start();
+        startTime = System.currentTimeMillis();
+        wasStarted.set(true);
         startLogThread();
         System.out.println("✅ [" + config.id + "] started PID " + process.pid());
     }
 
-    public synchronized void stop(int timeoutSeconds) {
+    public synchronized void stop(int timeoutSec) {
         if (!isRunning()) { System.out.println("[" + config.id + "] Not running."); return; }
         System.out.println("[" + config.id + "] Sending '" + config.type.stopCommand() + "'...");
         sendCommand(config.type.stopCommand());
         try {
-            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+            if (!process.waitFor(timeoutSec, TimeUnit.SECONDS)) {
                 System.out.println("[" + config.id + "] Timeout — SIGTERM");
                 process.destroy();
                 if (!process.waitFor(5, TimeUnit.SECONDS)) {
@@ -58,13 +63,14 @@ public class ServerInstance {
                 }
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        startTime = -1;
         System.out.println("🛑 [" + config.id + "] stopped.");
     }
 
-    public void restart(String javaExecutable) throws IOException {
+    public void restart(String javaExec) throws IOException {
         stop(30);
         try { Thread.sleep(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        start(javaExecutable);
+        start(javaExec);
     }
 
     public synchronized boolean sendCommand(String command) {
@@ -74,17 +80,21 @@ public class ServerInstance {
             stdin.write((command + "\n").getBytes());
             stdin.flush();
             return true;
-        } catch (IOException e) { System.out.println("[" + config.id + "] Send failed: " + e.getMessage()); return false; }
+        } catch (IOException e) {
+            System.out.println("[" + config.id + "] Send failed: " + e.getMessage());
+            return false;
+        }
     }
 
     private void startLogThread() {
         logThread = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                 BufferedWriter writer = Files.newBufferedWriter(logFile, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                 BufferedWriter w = Files.newBufferedWriter(logFile,
+                     StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
                 String line;
-                while ((line = reader.readLine()) != null) {
+                while ((line = r.readLine()) != null) {
                     String stamped = "[" + LocalDateTime.now().format(TS) + "] " + line;
-                    writer.write(stamped); writer.newLine(); writer.flush();
+                    w.write(stamped); w.newLine(); w.flush();
                     synchronized (tailBuffer) {
                         tailBuffer.add(stamped);
                         if (tailBuffer.size() > TAIL_BUFFER) tailBuffer.remove(0);
@@ -103,11 +113,15 @@ public class ServerInstance {
         }
     }
 
-    public synchronized boolean isRunning() { return process != null && process.isAlive(); }
-    public synchronized long pid() { return isRunning() ? process.pid() : -1; }
+    public synchronized boolean isRunning()   { return process != null && process.isAlive(); }
+    public synchronized long    pid()          { return isRunning() ? process.pid() : -1; }
+    public boolean              wasStarted()   { return wasStarted.get(); }
+    public long                 uptimeSeconds(){ return startTime>0&&isRunning() ? (System.currentTimeMillis()-startTime)/1000 : -1; }
 
     public String statusLine() {
-        String status = isRunning() ? "\u001B[32mRUNNING\u001B[0m PID=" + pid() : "\u001B[90mSTOPPED\u001B[0m";
+        String status = isRunning()
+            ? "\u001B[32mRUNNING\u001B[0m PID=" + pid()
+            : "\u001B[90mSTOPPED\u001B[0m";
         return String.format("  %-20s %-10s port=%-6d heap=%-6s %s",
             config.id, config.type, config.port, config.heap, status);
     }
