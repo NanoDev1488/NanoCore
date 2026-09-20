@@ -1,0 +1,8 @@
+{
+  "id": "nanocore-adminhub",
+  "name": "NanoCore AdminHub",
+  "version": "0.1.0",
+  "description": "Admin hub /admServerHub command",
+  "authors": ["NanoCore"],
+  "main": "com.nanocore.adminhub.velocity.AdminHubVelocityPlugin"
+}

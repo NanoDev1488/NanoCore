@@ -1,0 +1,18 @@
+name: NanoCore-AdminHub
+version: 0.1.0
+main: com.nanocore.adminhub.paper.AdminHubPaperPlugin
+api-version: "1.21"
+description: NanoCore AdminHub — mini admin server with control panel
+authors: [NanoCore]
+website: https://github.com/NanoDev1488/NanoCore
+
+commands:
+  nanocmd:
+    description: Send a command to NanoCore server manager
+    usage: /nanocmd <start|stop|restart|list> [server]
+    permission: nanocore.adminhub
+
+permissions:
+  nanocore.adminhub:
+    description: Access to NanoCore AdminHub
+    default: op
