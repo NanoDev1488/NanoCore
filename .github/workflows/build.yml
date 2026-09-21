@@ -32,13 +32,56 @@ jobs:
           LAST=$(git tag --sort=-version:refname | head -1)
           if [ -z "$LAST" ]; then NEW="v${SRC_VER}"
           else
-            TV=${LAST#v}; MAJ=$(echo $TV|cut -d. -f1); MIN=$(echo $TV|cut -d. -f2); PAT=$(echo $TV|cut -d. -f3)
+            TV=${LAST#v}
+            MAJ=$(echo $TV|cut -d. -f1); MIN=$(echo $TV|cut -d. -f2); PAT=$(echo $TV|cut -d. -f3)
             BUMP="${{ github.event.inputs.version_bump || 'patch' }}"
-            case $BUMP in major) MAJ=$((MAJ+1));MIN=0;PAT=0;; minor) MIN=$((MIN+1));PAT=0;; *) PAT=$((PAT+1));; esac
+            case $BUMP in
+              major) MAJ=$((MAJ+1));MIN=0;PAT=0;;
+              minor) MIN=$((MIN+1));PAT=0;;
+              *)     PAT=$((PAT+1));;
+            esac
             NEW="v${MAJ}.${MIN}.${PAT}"
           fi
           echo "tag=$NEW" >> $GITHUB_OUTPUT
           echo "New tag: $NEW"
+
+      - name: Download devkit APIs
+        run: |
+          mkdir -p devkit deps
+          python3 << 'PYEOF'
+          import urllib.request, xml.etree.ElementTree as ET, shutil
+          UA = "NanoCore/0.1.0"
+          def fetch(url):
+              req = urllib.request.Request(url, headers={"User-Agent": UA})
+              with urllib.request.urlopen(req) as r: return r.read()
+          def dl(url, dest):
+              print(f"  Downloading {dest}...")
+              req = urllib.request.Request(url, headers={"User-Agent": UA})
+              with urllib.request.urlopen(req) as r, open(dest,"wb") as f: shutil.copyfileobj(r,f)
+          REPO = "https://repo.papermc.io/repository/maven-public"
+          # velocity-api
+          meta = ET.fromstring(fetch(f"{REPO}/com/velocitypowered/velocity-api/maven-metadata.xml"))
+          ver = meta.findtext("./versioning/release") or meta.findtext("./versioning/latest")
+          dl(f"{REPO}/com/velocitypowered/velocity-api/{ver}/velocity-api-{ver}.jar","devkit/velocity-api.jar")
+          # paper-api 1.21.4
+          vf = "1.21.4-R0.1-SNAPSHOT"
+          meta2 = ET.fromstring(fetch(f"{REPO}/io/papermc/paper/paper-api/{vf}/maven-metadata.xml"))
+          for sv in meta2.findall("./versioning/snapshotVersions/snapshotVersion"):
+              if sv.findtext("extension")=="jar" and not sv.findtext("classifier"):
+                  fname = f"paper-api-{sv.findtext('value')}.jar"
+                  dl(f"{REPO}/io/papermc/paper/paper-api/{vf}/{fname}","devkit/paper-api-1.21.4.jar")
+                  break
+          print("Devkit ready")
+          PYEOF
+
+      - name: Extract compile deps
+        run: |
+          cd deps
+          jar xf ../devkit/velocity-api.jar com/google/inject net/kyori org/slf4j com/mojang org/jetbrains 2>/dev/null || true
+          # BungeeCord chat (for Paper plugin compilation)
+          curl -sL -o /tmp/bc.jar "https://ci.md-5.net/job/BungeeCord/lastSuccessfulBuild/artifact/bootstrap/target/BungeeCord.jar" || true
+          [ -f /tmp/bc.jar ] && jar xf /tmp/bc.jar net/md_5 2>/dev/null || true
+          cd ..
 
       - name: Build NanoCore.jar
         run: |
@@ -48,35 +91,34 @@ jobs:
           jar cfm NanoCore.jar manifest.txt -C out .
           echo "NanoCore.jar: $(du -sh NanoCore.jar | cut -f1)"
 
-      - name: Build AdminHub plugins
+      - name: Build AdminHub Velocity plugin
         run: |
-          # Velocity plugin
-          mkdir -p velocity_out
-          find adminhub/velocity -name "*.java" | xargs javac -proc:none -cp devkit/velocity-api.jar -d velocity_out
           mkdir -p velocity_out/META-INF/velocity
+          find adminhub/velocity -name "*.java" | xargs javac -proc:none \
+            -cp "devkit/velocity-api.jar:deps" \
+            -d velocity_out
           cp adminhub/velocity-plugin.json velocity_out/META-INF/velocity/velocity-plugin.json
           jar cf NanoCore-AdminHub-Velocity.jar -C velocity_out .
           echo "AdminHub-Velocity: $(du -sh NanoCore-AdminHub-Velocity.jar | cut -f1)"
 
-          # Paper plugin (requires paper-api)
+      - name: Build AdminHub Paper plugin
+        run: |
           mkdir -p paper_out
-          # paper-api downloaded separately via Maven or from release assets
-          if [ -f devkit/paper-api-1.21.4.jar ]; then
-            find adminhub/paper -name "*.java" | xargs javac -proc:none -cp devkit/paper-api-1.21.4.jar -d paper_out
-            cp adminhub/paper/resources/plugin.yml paper_out/
-            jar cf NanoCore-AdminHub-Paper.jar -C paper_out .
-            echo "AdminHub-Paper: $(du -sh NanoCore-AdminHub-Paper.jar | cut -f1)"
-          fi
+          find adminhub/paper -name "*.java" | xargs javac -proc:none \
+            -cp "devkit/paper-api-1.21.4.jar:deps" \
+            -d paper_out
+          cp adminhub/paper/resources/plugin.yml paper_out/
+          jar cf NanoCore-AdminHub-Paper.jar -C paper_out .
+          echo "AdminHub-Paper: $(du -sh NanoCore-AdminHub-Paper.jar | cut -f1)"
 
       - name: Download & patch server jars
         run: |
-          java -jar NanoCore.jar download
+          java -jar NanoCore.jar --no-web --no-watchdog download
           find NanoCore -type f -name "*.jar" | sort
 
       - name: Create bundle
         run: |
-          java -jar NanoCore.jar bundle
-          echo "Bundle: $(du -sh NanoCore-bundle.jar 2>/dev/null || echo 'skipped')"
+          java -jar NanoCore.jar --no-web --no-watchdog bundle || echo "Bundle skipped"
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
@@ -89,16 +131,31 @@ jobs:
 
             ### Быстрый старт
             ```bash
-            java -jar NanoCore.jar          # авто-скачка при первом запуске
-            java -jar NanoCore-bundle.jar   # всё в одном файле
+            # Скачай NanoCore.jar — всё остальное скачает сам при первом запуске
+            java -jar NanoCore.jar
+
+            # Pterodactyl — работает с любой командой запуска
+            java -jar {{SERVER_JARFILE}} --port {{SERVER_PORT}}
+
+            # Всё в одном файле
+            java -jar NanoCore-bundle.jar
             ```
 
-            ### Pterodactyl
-            Startup command: `java -jar {{SERVER_JARFILE}}`
-            (любые лишние аргументы автоматически игнорируются)
-
             ### AdminHub
-            Настройка: `NanoCore/nanocore.properties` → `adminhub_enabled=true/false`
+            ```properties
+            # NanoCore/nanocore.properties
+            adminhub_enabled=true   # /admServerHub в игре
+            ```
+
+            | Файл | Описание |
+            |------|----------|
+            | `NanoCore.jar` | Менеджер (~80KB) |
+            | `NanoCore-bundle.jar` | Всё в одном файле |
+            | `NanoCore-AdminHub-Velocity.jar` | Velocity плагин /admServerHub |
+            | `NanoCore-AdminHub-Paper.jar` | Paper плагин admin world |
+            | `velocity-patched.jar` | Velocity (bStats/legacy/GS4/20+Netty удалены) |
+            | `paper-*-nanocore.jar` | Paper с NanoCore конфигом |
+            | `BungeeCord-patched.jar` | BungeeCord (bStats/legacy удалены) |
           files: |
             NanoCore.jar
             NanoCore-bundle.jar
@@ -110,3 +167,4 @@ jobs:
             NanoCore/servers/bungee-legacy/BungeeCord-patched.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
